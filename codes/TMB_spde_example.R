@@ -26,18 +26,23 @@ dyn.load( dynlib("TMB_spde_example") )
 # Data of SPDEtoy
 head(SPDEtoy)
 
-mesh = inla.mesh.create(as.matrix(SPDEtoy[1:100, 1:2]), plot.delay=NULL, refine=FALSE)
+mesh = inla.mesh.create(as.matrix(SPDEtoy[, 1:2]),    plot.delay=NULL, refine=FALSE)
+mesh$n
 plot(mesh)
 
 spde = inla.spde2.matern(mesh, alpha=2)
 
+
+
 ######## ######## SPDE-based
 # Build object
-Data = list(y_i = as.vector(SPDEtoy$y[1:100]), 
+# TMB Data section
+Data = list(y_i = as.vector(SPDEtoy$y), 
             site_i = mesh$idx$loc-1,
             M0 = spde$param.inla$M0, 
             M1 = spde$param.inla$M1, 
             M2 = spde$param.inla$M2 )
+
 
 Params = list(logsigma  = -0.1,  
               logtau    = spde$param.inla$theta.initial[1],
@@ -63,6 +68,8 @@ report_spde = Obj$report()
 # Sparseness
 image( h_spde )
 
+library(scatterplot3d)
+scatterplot3d(SPDEtoy$s1, SPDEtoy$s2, Obj$report()$preds)
 
 #===========================================================================================
 #                                        Fit with tmbstan

@@ -3,6 +3,7 @@
 #include <Eigen/Sparse>
 #include <vector>
 #include <string>
+
 using namespace density;
 using Eigen::SparseMatrix;
 
@@ -31,6 +32,8 @@ template<class Type>
   Q = pow(exp(logtau), 2.)  * (kappa4*M0 + Type(2.0)*kappa2*M1 + M2);
   return Q;
 }
+
+
 template<class Type>
 Type objective_function<Type>::operator() ()
 {
@@ -69,20 +72,20 @@ Type objective_function<Type>::operator() ()
 //===================================
 //               Priors
 //===================================
-   Type nlp=0.0;                          // negative log prior  (priors)
-
-// Variance component
-   Type sigma = exp(logsigma);
-   nlp -= dcauchy(sigma,   Type(0.0), Type(2.0));
-  
-  
-// Hyperpriors
-   Type tau   = exp(logtau);
-   Type kappa = exp(logkappa);
-   
-   nlp -= dnorm(tau,    Type(0.0),   Type(1.0), true);
-   nlp -= dnorm(kappa,  Type(0.0),   Type(1.0), true);
-   
+//    Type nlp=0.0;                          // negative log prior  (priors)
+// 
+// // Variance component
+      Type sigma = exp(logsigma);
+//    nlp -= dcauchy(sigma,   Type(0.0), Type(2.0));
+//   
+//   
+// // Hyperpriors
+//    Type tau   = exp(logtau);
+//    Type kappa = exp(logkappa);
+//    
+//    nlp -= dnorm(tau,    Type(0.0),   Type(1.0), true);
+//    nlp -= dnorm(kappa,  Type(0.0),   Type(1.0), true);
+//    
      
    
    
@@ -112,10 +115,11 @@ Type objective_function<Type>::operator() ()
    Type nll = -log_lik.sum(); // total NLL
    
 // Jacobian adjustment for variances
-   nll -= logsigma + logtau + logkappa;
+   //nll -= logsigma + logtau + logkappa;
    
 // Calculate joint negative log likelihood
-   Type jnll = nll + nll_omega + nlp;
+   //Type jnll = nll + nll_omega + nlp;
+   Type jnll = nll + nll_omega;
   
    vector<Type> preds = mu;
     
