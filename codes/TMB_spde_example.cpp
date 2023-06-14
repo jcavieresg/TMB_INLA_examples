@@ -103,8 +103,8 @@ Type objective_function<Type>::operator() ()
 }
 
 // Probability of random effects
-   nll_omega += SCALE(GMRF(Q), 1/exp(logtau) )(omega_s);
-  
+   //nll_omega += SCALE(GMRF(Q), 1/exp(logtau) )(omega_s);
+     nll_omega += GMRF(Q)(omega_s); // returns negative already
  
 // Probability of the data, given random effects (likelihood)
    vector<Type> log_lik(n_i);
