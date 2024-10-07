@@ -3,7 +3,7 @@ setwd("")
 
 ## Libraries used
 library(pacman)
-pacman::p_load(TMB, TMBhelper, pracma, dplyr, expm, tmbstan, parallel, MASS, Matrix,
+pacman::p_load(TMB, TMBhelper, INLA, pracma, dplyr, expm, tmbstan, parallel, MASS, Matrix,
                ggplot2, gridExtra, bayesplot, grid, VGAM, stats, scatterplot3d)
 
 options(scipen=999)
@@ -16,30 +16,34 @@ TMB::compile('TMB_spde_example.cpp')
 dyn.load( dynlib("TMB_spde_example") )
 #============================================
 
-# Data of SPDEtoy
+# Data of SPDEtoy (from INLA package)
 head(SPDEtoy)
-
-mesh = inla.mesh.create(as.matrix(SPDEtoy[, 1:2]),    plot.delay=NULL, refine=FALSE)
+coords <- as.matrix(SPDEtoy[1:50, 1:2])
+mesh = inla.mesh.create(coords, plot.delay=NULL, refine=FALSE)
 mesh$n
 plot(mesh)
 
-spde = inla.spde2.matern(mesh, alpha=2)
+# Create the observation matrix
+A <- inla.spde.make.A(mesh = mesh, loc = coords)
 
+# Create the spde model object
+spde = inla.spde2.matern(mesh, alpha = 2)
+spde_mat = spde$param.inla[c("M0","M1","M2")]
 
 #================================
-# SPDE-based
+# Data inputs for TMB
 #================================
-data_tmb = list(y_i = as.vector(SPDEtoy$y), 
-            site_i = mesh$idx$loc-1,
-            M0 = spde$param.inla$M0, 
-            M1 = spde$param.inla$M1, 
-            M2 = spde$param.inla$M2 )
+data_tmb = list(y = as.vector(SPDEtoy$y[1:50]), # first 100 observations
+                spde_mat = spde_mat,
+                A = A)
 
-
-par_tmb = list(logsigma  = -0.1,  
-              logtau    = spde$param.inla$theta.initial[1],
-              logkappa  = spde$param.inla$theta.initial[2],
-              u = rnorm(nrow(spde$param.inla$M0)))
+#================================
+# Pars inputs for TMB
+#================================
+par_tmb = list(logsigma_e  = 0.1,  
+               logtau    = spde$param.inla$theta.initial[1],
+               logkappa  = spde$param.inla$theta.initial[2],
+               u = rnorm(nrow(spde$param.inla$M0)))
 
 obj = MakeADFun(data = data_tmb, parameters = par_tmb, random="u", DLL="TMB_spde_example" )
 
@@ -51,7 +55,6 @@ opt = with(obj, nlminb(par, fn, gr, control=list(trace=1)))
 toc()
 
 # Optimize
-#Opt_spde = TMBhelper::Optimize( obj=Obj, newtonsteps=1, bias.correct=TRUE )
 h_spde = obj$env$spHess(random=TRUE)
 report_spde = obj$report()
 # Sparseness
@@ -60,14 +63,16 @@ image( h_spde )
 library(scatterplot3d)
 scatterplot3d(SPDEtoy$s1, SPDEtoy$s2, obj$report()$preds)
 
+
 #===========================================================================================
 # Bayesian modelling ---> tmbstan
 #===========================================================================================
-
 tic("Time of estimation")
-fit = tmbstan(obj, chains= 3, open_progress = FALSE, 
-              init='last.par.best', control = list(max_treedepth = 10, adapt_delta = 0.9), 
-              iter=3000, warmup=700, seed=483892929)
+fit = tmbstan(obj,
+              chains= 3, open_progress = FALSE,
+              control = list(max_treedepth= 10,  adapt_delta = 0.8),
+              iter = 3000, warmup= 700, cores = no_cores,
+              init = 'last.par.best', seed = 12345)
 toc()
 
 
