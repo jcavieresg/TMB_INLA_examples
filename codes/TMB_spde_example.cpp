@@ -3,10 +3,25 @@
 #include <Eigen/Sparse>
 #include <vector>
 #include <string>
-
 using namespace density;
 using Eigen::SparseMatrix;
+using namespace R_inla; //includes SPDE-spesific functions, e.g. Q_spde()
 
+
+// Can also choose which likelihood to use.
+// Lognormal density
+template<class Type>
+Type dlognorm(Type x, Type meanlog, Type sdlog, int give_log=0){
+  //return 1/(sqrt(2*M_PI)*sd)*exp(-.5*pow((x-mean)/sd,2));
+  Type logres = dnorm( log(x), meanlog, sdlog, true) - log(x);
+  if(give_log) return logres; else return exp(logres);
+}
+// Inverse gamma
+template<class Type>
+Type dinvgauss(Type x, Type mean, Type shape, int give_log=0){
+  Type logres = 0.5*log(shape) - 0.5*log(2*M_PI*pow(x,3)) - (shape * pow(x-mean,2) / (2*pow(mean,2)*x));
+  if(give_log) return logres; else return exp(logres);
+}
 // dcauchy for hyperparameters
 template<class Type>
 Type dcauchy(Type x, Type mean, Type shape, int give_log=0){
@@ -18,143 +33,120 @@ Type dcauchy(Type x, Type mean, Type shape, int give_log=0){
   if(give_log) return logres; else return exp(logres);
 }
 
-
-// helper function to make sparse SPDE precision matrix
-// Inputs:
-// logkappa: log(kappa) parameter value
-// logtau: log(tau) parameter value
-//  M0, M1, M2: these sparse matrices are output from R::INLA::inla.spde2.matern()$param.inla$M*
 template<class Type>
-  SparseMatrix<Type> spde_Q(Type logkappa, Type logtau, SparseMatrix<Type> M0, SparseMatrix<Type> M1, SparseMatrix<Type> M2) {
-  SparseMatrix<Type> Q;
-  Type kappa2 = exp(2. * logkappa);
-  Type kappa4 = kappa2*kappa2;
-  Q = pow(exp(logtau), 2.)  * (kappa4*M0 + Type(2.0)*kappa2*M1 + M2);
-  return Q;
+Type ldhalfnorm(Type x, Type var){
+  return 0.5*log(2)-0.5*log(var*M_PI)+pow(x,2)/(2*var);
 }
 
 
+//=====================================================
+// Initialize the TMB model
+//=====================================================
 template<class Type>
 Type objective_function<Type>::operator() ()
 {
-
-
-//=============================================================================================================
-//                                              DATA SECTION
-//=============================================================================================================
-  
-// Vectors of real data
-   DATA_VECTOR(y_i);         // y_i (response variable)
-  
-// Indices for factors
-   DATA_FACTOR(site_i);       // Random effect index for observation i
   
   
-// SPDE objects
-   DATA_SPARSE_MATRIX(M0);    // used to make gmrf precision
-   DATA_SPARSE_MATRIX(M1);    // used to make gmrf precision
-   DATA_SPARSE_MATRIX(M2);    // used to make gmrf precision
-  
-  
-//=============================================================================================================
-//                                              PARAMETERS SECTION
-//=============================================================================================================
-  
-// Fixed effects
-  PARAMETER(logsigma);		         
-  PARAMETER(logtau);		                 // spatial process
-  PARAMETER(logkappa);		               // decorrelation distance (kind of)
-  
-  PARAMETER_VECTOR(omega_s);	           // spatial effects
-  SparseMatrix<Type> Q   = spde_Q(logkappa, logtau, M0, M1, M2);
+  //=========================
+  //      DATA SECTION
+  //=========================
+  DATA_VECTOR(y);		              // Response
+  DATA_STRUCT(spde_mat, spde_t);  // Three matrices needed for representing the GMRF, see p. 8 in Lindgren et al. (2011)
+  DATA_SPARSE_MATRIX(A);          // used to project from spatial mesh to data locations
   
 
-//===================================
-//               Priors
-//===================================
-//    Type nlp=0.0;                          // negative log prior  (priors)
-// 
-// // Variance component
-      Type sigma = exp(logsigma);
-//    nlp -= dcauchy(sigma,   Type(0.0), Type(2.0));
-//   
-//   
-// // Hyperpriors
-//    Type tau   = exp(logtau);
-//    Type kappa = exp(logkappa);
-//    
-//    nlp -= dnorm(tau,    Type(0.0),   Type(1.0), true);
-//    nlp -= dnorm(kappa,  Type(0.0),   Type(1.0), true);
-//    
-     
-   
-   
-//=============================================================================================================
-// Objective function is sum of negative log likelihood components
-   using namespace density;
-   int n_i = y_i.size();	             // number of observations 
-   Type nll_omega=0;		               // spatial effects
+  //=========================
+  //   PARAMETER SECTION
+  //=========================
+  PARAMETER(logsigma_e);
+  PARAMETER(logtau);
+  PARAMETER(logkappa);
   
-   
-// The model predicted for each observation, in natural space:
-   vector<Type> mu(n_i);
-   for( int i=0; i<n_i; i++){
-        mu(i) = omega_s(site_i(i)); 
+  PARAMETER_VECTOR(u);	          // spatial effects
+  
+  
+  // Transformed parameters
+  Type sigma_e  = exp(logsigma_e);
+  Type tau = exp(logtau);
+  Type kappa = exp(logkappa);
+  
+  
+  SparseMatrix<Type> Q = Q_spde(spde_mat, kappa);
+  
+
+  // ===================================
+  //               Priors
+  // ===================================
+  Type nlp = 0.0;
+ // Prior on sigma
+  nlp -= dcauchy(sigma_e,   Type(0.0), Type(5.0), true);
+  
+  // Prior in Hyperparameters
+  nlp -= dnorm(tau,      Type(0.0),   Type(1.0), true);   //
+  nlp -= dnorm(kappa,    Type(0.0),   Type(1.0), true);   //
+
+
+  //=============================================================================================================
+  // Objective function is sum of negative log likelihood components
+  int n = y.size();	                 // number of observations 
+
+  Type nll = 0.0;	                   // likelihood for the observations
+  Type nll_u = 0.0;		               // likelihood for the spatial effect
+  
+  
+  // Linear predictor
+  vector<Type> mu(n);
+  mu  = A*u;
+  
+  nll_u += SCALE(GMRF(Q), 1/ tau)(u); // returns negative already
+  
+  
+  // Probability of data conditional on fixed effect values
+  for(int i=0; i<n; i++){
+    // And the contribution of the likelihood
+    nll -= dnorm(y(i), mu(i), sigma_e, true);
+  }
+  
+  
+  // Simule data from mu
+  vector<Type> y_sim(n);
+  vector<Type> srf(n);
+  srf = A*u;
+  for( int i=0; i<n; i++){
+    SIMULATE {
+      y_sim(i) = rnorm(srf(i), sigma_e);
+      REPORT(y_sim)};
+  }
+  
+  
+  Type rho = sqrt(8.0) / kappa;
+  Type sigma_u = 1.0 / (tau*kappa);
+  
+  // Jacobian adjustment 
+  nll -= logsigma_e + logtau + logkappa;
+  
+  
+  // Calculate joint negative log likelihood
+  Type jnll = nll + nll_u + nlp;
+  
+  
+  //=====================================================================================================
+  // Reporting
+  REPORT(jnll);
+  REPORT(u);
+  REPORT(mu);
+  REPORT(logsigma_e);
+  REPORT(logtau);
+  REPORT(logkappa);
+  REPORT(rho);
+  REPORT(sigma_u);
+  
+  //=======================================================================================================
+  // AD report (standard devations)
+  ADREPORT(logsigma_e);
+  ADREPORT(logtau);
+  ADREPORT(logkappa);
+  ADREPORT(rho);
+  ADREPORT(sigma_u);    
+  return jnll;
 }
-
-// Probability of random effects
-   //nll_omega += SCALE(GMRF(Q), 1/exp(logtau) )(omega_s);
-     nll_omega += GMRF(Q)(omega_s); // returns negative already
- 
-// Probability of the data, given random effects (likelihood)
-   vector<Type> log_lik(n_i);
-   for( int i = 0; i<n_i; i++){
-       log_lik(i) = dnorm(y_i(i), mu(i), sigma, true);
-}
-  
-   Type nll = -log_lik.sum(); // total NLL
-   
-// Jacobian adjustment for variances
-   //nll -= logsigma + logtau + logkappa;
-   
-// Calculate joint negative log likelihood
-   //Type jnll = nll + nll_omega + nlp;
-   Type jnll = nll + nll_omega;
-  
-   vector<Type> preds = mu;
-    
-    
-// Derived quantities, given parameters
-// Geospatial
-   Type rho = sqrt(8) / exp(logkappa);
-   Type sigma_s = 1 / sqrt(4 * M_PI * exp(2*logtau) * exp(2*logkappa));
-   
-  
-//=====================================================================================================
-// Reporting
-   REPORT(jnll);
-   REPORT(nll);
-   REPORT(nll_omega);
-  
-    
-   REPORT(omega_s);
-   REPORT(preds);
-   REPORT(logsigma);
-   REPORT(logtau);
-   REPORT(logkappa);
-   REPORT(log_lik);
-   REPORT(rho);		         
-   REPORT(sigma_s);		         
-  
-//=======================================================================================================
-// AD report (standard devations)
-   ADREPORT(logsigma);	                  
-   ADREPORT(logtau);
-   ADREPORT(logkappa);
-    
-// Derived geospatial components
-   ADREPORT(rho);		               // geostatistical range
-   ADREPORT(sigma_s);		         
-   return jnll;
-}
-
