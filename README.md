@@ -1,3 +1,3 @@
 # INLA_TMB_examples
 
-Short presentation of R-INLA and TMB.
+Slides of my lecture "Computational Statistics" about R-INLA and TMB.
